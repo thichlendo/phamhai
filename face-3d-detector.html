@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>3D Face Mesh Detector</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0f;
+      color: #e0e0e0;
+      font-family: 'Courier New', monospace;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #videoElement {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+    #outputCanvas {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      top: 0; left: 0;
+    }
+
+    /* HUD overlay */
+    #hud {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* Corner decorations */
+    .corner {
+      position: absolute;
+      width: 30px; height: 30px;
+      border-color: #00ffe7;
+      border-style: solid;
+      opacity: 0.7;
+    }
+    .corner-tl { top: 12px; left: 12px; border-width: 2px 0 0 2px; }
+    .corner-tr { top: 12px; right: 12px; border-width: 2px 2px 0 0; }
+    .corner-bl { bottom: 12px; left: 12px; border-width: 0 0 2px 2px; }
+    .corner-br { bottom: 12px; right: 12px; border-width: 0 2px 2px 0; }
+
+    #stats {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 20px;
+      pointer-events: none;
+    }
+
+    .stat-box {
+      background: rgba(0,0,0,0.6);
+      border: 1px solid rgba(0,255,231,0.4);
+      border-radius: 6px;
+      padding: 6px 14px;
+      text-align: center;
+      backdrop-filter: blur(4px);
+    }
+
+    .stat-label {
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: #00ffe7;
+      text-transform: uppercase;
+      opacity: 0.8;
+    }
+
+    .stat-value {
+      font-size: 22px;
+      font-weight: bold;
+      color: #ffffff;
+      line-height: 1.1;
+    }
+
+    .stat-value.fps { color: #00ff88; font-size: 18px; }
+
+    #scanLine {
+      position: absolute;
+      left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #ff0, #ff0, transparent);
+      box-shadow: 0 0 12px 2px #ff0;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 20;
+      transition: opacity 0.1s;
+    }
+
+    #bottomBar {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: linear-gradient(transparent, rgba(0,0,0,0.7));
+      z-index: 15;
+    }
+
+    #statusMsg {
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: rgba(0,255,231,0.7);
+      text-transform: uppercase;
+    }
+
+    #switchCamBtn {
+      pointer-events: all;
+      background: rgba(0,0,0,0.5);
+      border: 1.5px solid rgba(0,255,231,0.5);
+      color: #00ffe7;
+      border-radius: 50px;
+      padding: 8px 18px;
+      font-size: 12px;
+      letter-spacing: 1px;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    #switchCamBtn:hover { background: rgba(0,255,231,0.15); border-color: #00ffe7; }
+    #switchCamBtn:active { transform: scale(0.95); }
+
+    #switchCamBtn svg { width: 16px; height: 16px; fill: #00ffe7; }
+
+    #trackerList {
+      position: absolute;
+      top: 90px;
+      right: 14px;
+      width: 130px;
+      pointer-events: none;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .tracker-entry {
+      background: rgba(0,0,0,0.55);
+      border-left: 3px solid;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 10px;
+      letter-spacing: 1px;
+      backdrop-filter: blur(3px);
+      animation: fadeIn 0.3s ease;
+    }
+
+    .tracker-entry.known { border-color: #00ffe7; color: #00ffe7; }
+    .tracker-entry.new   { border-color: #ffcc00; color: #ffcc00; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    #loadingOverlay {
+      position: absolute;
+      inset: 0;
+      background: #0a0a0f;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      z-index: 999;
+      transition: opacity 0.5s;
+    }
+    #loadingOverlay.hidden { opacity: 0; pointer-events: none; }
+
+    .spinner {
+      width: 50px; height: 50px;
+      border: 3px solid rgba(0,255,231,0.2);
+      border-top-color: #00ffe7;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text {
+      color: #00ffe7;
+      font-size: 13px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+
+<div id="container">
+  <!-- Loading overlay -->
+  <div id="loadingOverlay">
+    <div class="spinner"></div>
+    <div class="loading-text">Đang khởi động AI...</div>
+  </div>
+
+  <!-- Video + Canvas -->
+  <video id="videoElement" playsinline autoplay muted></video>
+  <canvas id="outputCanvas"></canvas>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div class="corner corner-tl"></div>
+    <div class="corner corner-tr"></div>
+    <div class="corner corner-bl"></div>
+    <div class="corner corner-br"></div>
+  </div>
+
+  <!-- Scan line effect -->
+  <div id="scanLine"></div>
+
+  <!-- Stats -->
+  <div id="stats">
+    <div class="stat-box">
+      <div class="stat-label">Hiện tại</div>
+      <div class="stat-value" id="currentCount">0</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Tổng phát hiện</div>
+      <div class="stat-value" id="totalCount">0</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">FPS</div>
+      <div class="stat-value fps" id="fpsDisplay">--</div>
+    </div>
+  </div>
+
+  <!-- Tracker list -->
+  <div id="trackerList"></div>
+
+  <!-- Bottom bar -->
+  <div id="bottomBar">
+    <div id="statusMsg">▶ Scanning...</div>
+    <button id="switchCamBtn">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M20 5h-3.17L15 3H9L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-8 13c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+        <path d="M4 12l1.41 1.41L7 11.83V15c0 1.66 1.34 3 3 3h2v-2H10c-.55 0-1-.45-1-1v-3.17l1.59 1.59L12 12l-4-4-4 4zm16 0l-1.41-1.41L17 12.17V9c0-1.66-1.34-3-3-3h-2v2h2c.55 0 1 .45 1 1v3.17l-1.59-1.59L12 12l4 4 4-4z"/>
+      </svg>
+      Đổi camera
+    </button>
+  </div>
+</div>
+
+<!-- MediaPipe via CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+<script>
+// ─── Web Audio beep ───────────────────────────────────────────────────────────
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playBeep(freq = 880, dur = 0.12, vol = 0.3) {
+  try {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    osc.start(audioCtx.currentTime);
+    osc.stop(audioCtx.currentTime + dur);
+  } catch(e) {}
+}
+
+// ─── DOM refs ─────────────────────────────────────────────────────────────────
+const video       = document.getElementById('videoElement');
+const canvas      = document.getElementById('outputCanvas');
+const ctx         = canvas.getContext('2d');
+const scanLine    = document.getElementById('scanLine');
+const statusMsg   = document.getElementById('statusMsg');
+const currentCountEl = document.getElementById('currentCount');
+const totalCountEl   = document.getElementById('totalCount');
+const fpsEl          = document.getElementById('fpsDisplay');
+const trackerListEl  = document.getElementById('trackerList');
+const loadingOverlay = document.getElementById('loadingOverlay');
+const switchCamBtn   = document.getElementById('switchCamBtn');
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let useFrontCamera = true;
+let currentStream  = null;
+let mediapipeCamera = null;
+
+let nextTrackerId = 1;
+let totalDetected = 0;
+let trackers      = []; // { id, color, entry }
+let scanAnimActive = false;
+let scanAnimY      = 0;
+let scanAnimDir    = 1;
+let scanAnimTimer  = null;
+
+// FPS
+let lastFrameTime = performance.now();
+let fps           = 0;
+let frameCount    = 0;
+let fpsTimer      = performance.now();
+
+// Colors
+const COLOR_KNOWN = '#00ffe7';   // cyan for returning / known faces
+const COLOR_NEW   = '#ffcc00';   // yellow for new faces
+const COLOR_ALERT = '#ff3c3c';   // red flash on first detection
+
+// ─── Scan animation ───────────────────────────────────────────────────────────
+function triggerScanAnimation() {
+  if (scanAnimActive) return;
+  scanAnimActive = true;
+  scanLine.style.opacity = '1';
+  scanAnimY = 0;
+  scanAnimDir = 1;
+  let passes = 0;
+
+  function animStep() {
+    scanAnimY += scanAnimDir * 4;
+    if (scanAnimY >= window.innerHeight) { scanAnimDir = -1; passes++; }
+    if (scanAnimY <= 0 && passes > 0)   { scanAnimDir =  1; passes++; }
+    scanLine.style.top = scanAnimY + 'px';
+    if (passes >= 2) {
+      scanLine.style.opacity = '0';
+      scanAnimActive = false;
+      return;
+    }
+    requestAnimationFrame(animStep);
+  }
+  requestAnimationFrame(animStep);
+}
+
+// ─── Tracker list UI ─────────────────────────────────────────────────────────
+function updateTrackerListUI() {
+  trackerListEl.innerHTML = '';
+  trackers.forEach(t => {
+    const el = document.createElement('div');
+    el.className = 'tracker-entry ' + (t.isNew ? 'new' : 'known');
+    el.textContent = `ID #${t.id}`;
+    trackerListEl.appendChild(el);
+  });
+}
+
+// ─── Face registration ────────────────────────────────────────────────────────
+// Simple heuristic: compare face count changes frame to frame.
+// For a full tracker we'd use IoU/centroid distance – here we assign IDs
+// by counting newly appeared faces vs disappeared ones.
+
+let prevFaceCount = 0;
+
+function reconcileTrackers(faceCount) {
+  if (faceCount === prevFaceCount) {
+    // Mark all as known
+    trackers.forEach(t => t.isNew = false);
+    return;
+  }
+
+  if (faceCount > prevFaceCount) {
+    // New faces appeared
+    const added = faceCount - prevFaceCount;
+    for (let i = 0; i < added; i++) {
+      totalDetected++;
+      const newTracker = { id: nextTrackerId++, isNew: true, color: COLOR_NEW };
+      trackers.push(newTracker);
+      triggerScanAnimation();
+      playBeep(1200 + i * 200, 0.14, 0.25);
+      // After 2s mark as known
+      (function(t) {
+        setTimeout(() => { t.isNew = false; t.color = COLOR_KNOWN; updateTrackerListUI(); }, 2000);
+      })(newTracker);
+    }
+    totalCountEl.textContent = totalDetected;
+  } else {
+    // Faces left
+    const removed = prevFaceCount - faceCount;
+    for (let i = 0; i < removed; i++) {
+      trackers.pop();
+    }
+  }
+
+  prevFaceCount = faceCount;
+  updateTrackerListUI();
+}
+
+// ─── Draw mesh ────────────────────────────────────────────────────────────────
+const TESSELATION = window.FACEMESH_TESSELATION || [];
+const CONTOURS    = window.FACEMESH_FACE_OVAL   || [];
+const LIPS        = window.FACEMESH_LIPS         || [];
+const LEFT_EYE   = window.FACEMESH_LEFT_EYE      || [];
+const RIGHT_EYE  = window.FACEMESH_RIGHT_EYE     || [];
+
+function drawFaceMesh(landmarks, faceIndex) {
+  const tracker = trackers[faceIndex] || { color: COLOR_KNOWN, isNew: false };
+  const baseColor = tracker.color;
+  const alpha = tracker.isNew ? 0.95 : 0.65;
+
+  const W = canvas.width, H = canvas.height;
+
+  // Helper
+  function drawConnectors(pairs, color, lineWidth) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.beginPath();
+    pairs.forEach(([a, b]) => {
+      const p1 = landmarks[a], p2 = landmarks[b];
+      if (!p1 || !p2) return;
+      ctx.moveTo(p1.x * W, p1.y * H);
+      ctx.lineTo(p2.x * W, p2.y * H);
+    });
+    ctx.stroke();
+  }
+
+  // Tesselation
+  if (TESSELATION.length) {
+    ctx.globalAlpha = alpha * 0.35;
+    drawConnectors(TESSELATION, baseColor, 0.5);
+  }
+
+  // Contour / eyes / lips with more opacity
+  ctx.globalAlpha = alpha;
+  if (CONTOURS.length)   drawConnectors(CONTOURS,   baseColor, 1.5);
+  if (LIPS.length)       drawConnectors(LIPS,        baseColor, 1.5);
+  if (LEFT_EYE.length)   drawConnectors(LEFT_EYE,   baseColor, 1.5);
+  if (RIGHT_EYE.length)  drawConnectors(RIGHT_EYE,  baseColor, 1.5);
+
+  // Key landmark dots
+  ctx.globalAlpha = alpha;
+  const keyPoints = [1, 4, 33, 263, 61, 291, 199, 10, 152, 234, 454, 468, 473];
+  keyPoints.forEach(idx => {
+    const p = landmarks[idx];
+    if (!p) return;
+    ctx.beginPath();
+    ctx.arc(p.x * W, p.y * H, tracker.isNew ? 3 : 2, 0, Math.PI * 2);
+    ctx.fillStyle = baseColor;
+    ctx.fill();
+  });
+
+  // Face ID label
+  const nose = landmarks[1];
+  if (nose) {
+    ctx.globalAlpha = 1;
+    ctx.font = 'bold 12px Courier New';
+    ctx.fillStyle = baseColor;
+    const label = tracker.isNew ? `⚡ NEW #${tracker.id}` : `✦ #${tracker.id}`;
+    const x = nose.x * W - 20;
+    const y = nose.y * H - 30;
+    ctx.shadowColor = baseColor;
+    ctx.shadowBlur = 8;
+    ctx.fillText(label, x, y);
+    ctx.shadowBlur = 0;
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+// ─── MediaPipe callback ───────────────────────────────────────────────────────
+function onResults(results) {
+  // FPS calc
+  frameCount++;
+  const now = performance.now();
+  if (now - fpsTimer >= 1000) {
+    fps = Math.round(frameCount * 1000 / (now - fpsTimer));
+    frameCount = 0;
+    fpsTimer = now;
+    fpsEl.textContent = fps;
+  }
+
+  // Resize canvas to match video
+  canvas.width  = results.image.width;
+  canvas.height = results.image.height;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw camera frame (mirrored to match video CSS transform)
+  ctx.save();
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+
+  // Also mirror landmarks drawing
+  ctx.save();
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+
+  if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+    const faceCount = results.multiFaceLandmarks.length;
+    reconcileTrackers(faceCount);
+    currentCountEl.textContent = faceCount;
+
+    results.multiFaceLandmarks.forEach((landmarks, i) => {
+      drawFaceMesh(landmarks, i);
+    });
+
+    statusMsg.textContent = `▶ ${faceCount} khuôn mặt được phát hiện`;
+  } else {
+    reconcileTrackers(0);
+    currentCountEl.textContent = '0';
+    statusMsg.textContent = '◉ Đang quét...';
+  }
+
+  ctx.restore();
+}
+
+// ─── MediaPipe FaceMesh setup ─────────────────────────────────────────────────
+let faceMesh = null;
+
+async function initFaceMesh() {
+  faceMesh = new FaceMesh({
+    locateFile: (file) =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+  });
+
+  faceMesh.setOptions({
+    maxNumFaces: 30,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+
+  faceMesh.onResults(onResults);
+}
+
+// ─── Camera setup ─────────────────────────────────────────────────────────────
+async function startCamera() {
+  if (currentStream) {
+    currentStream.getTracks().forEach(t => t.stop());
+  }
+  if (mediapipeCamera) {
+    mediapipeCamera.stop();
+  }
+
+  const constraints = {
+    video: {
+      facingMode: useFrontCamera ? 'user' : 'environment',
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    },
+    audio: false,
+  };
+
+  try {
+    currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = currentStream;
+    video.style.transform = useFrontCamera ? 'scaleX(-1)' : 'scaleX(1)';
+
+    await new Promise(resolve => { video.onloadedmetadata = resolve; });
+
+    mediapipeCamera = new Camera(video, {
+      onFrame: async () => {
+        if (faceMesh) await faceMesh.send({ image: video });
+      },
+      width: 1280,
+      height: 720,
+    });
+
+    await mediapipeCamera.start();
+    loadingOverlay.classList.add('hidden');
+  } catch (err) {
+    statusMsg.textContent = '⚠ Không thể truy cập camera: ' + err.message;
+    console.error(err);
+  }
+}
+
+// ─── Switch camera ────────────────────────────────────────────────────────────
+switchCamBtn.addEventListener('click', async () => {
+  // Resume audio context on user interaction
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+
+  useFrontCamera = !useFrontCamera;
+  loadingOverlay.classList.remove('hidden');
+  await startCamera();
+});
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────────
+(async () => {
+  // Load FACEMESH constants after mediapipe loads
+  await initFaceMesh();
+
+  // Now grab the constants (they're set by the mediapipe script)
+  const mp = window;
+  Object.assign(window, {
+    FACEMESH_TESSELATION: mp.FACEMESH_TESSELATION || [],
+    FACEMESH_FACE_OVAL:   mp.FACEMESH_FACE_OVAL   || [],
+    FACEMESH_LIPS:        mp.FACEMESH_LIPS         || [],
+    FACEMESH_LEFT_EYE:    mp.FACEMESH_LEFT_EYE     || [],
+    FACEMESH_RIGHT_EYE:   mp.FACEMESH_RIGHT_EYE    || [],
+  });
+
+  TESSELATION.push(...(window.FACEMESH_TESSELATION || []));
+  CONTOURS.push(...(window.FACEMESH_FACE_OVAL || []));
+  LIPS.push(...(window.FACEMESH_LIPS || []));
+  LEFT_EYE.push(...(window.FACEMESH_LEFT_EYE || []));
+  RIGHT_EYE.push(...(window.FACEMESH_RIGHT_EYE || []));
+
+  await startCamera();
+})();
+</script>
+</body>
+</html>
