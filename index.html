@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>3D Face Mesh Detector</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0f;
+      color: #e0e0e0;
+      font-family: 'Courier New', monospace;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ── Video element: playsinline is MANDATORY for iOS/Android inline playback ── */
+    #videoElement {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+    #outputCanvas {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      top: 0; left: 0;
+    }
+
+    /* HUD overlay */
+    #hud {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* Corner decorations */
+    .corner {
+      position: absolute;
+      width: 30px; height: 30px;
+      border-color: #00ffe7;
+      border-style: solid;
+      opacity: 0.7;
+    }
+    .corner-tl { top: 12px; left: 12px; border-width: 2px 0 0 2px; }
+    .corner-tr { top: 12px; right: 12px; border-width: 2px 2px 0 0; }
+    .corner-bl { bottom: 12px; left: 12px; border-width: 0 0 2px 2px; }
+    .corner-br { bottom: 12px; right: 12px; border-width: 0 2px 2px 0; }
+
+    /* ── Status Bar (debug / trạng thái khởi động) ── */
+    #statusBar {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      padding: 10px 16px;
+      background: rgba(0,0,0,0.75);
+      backdrop-filter: blur(6px);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      pointer-events: none;
+      transition: opacity 0.4s;
+    }
+    #statusBar.hidden { opacity: 0; pointer-events: none; }
+
+    #statusDot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #ffcc00;
+      flex-shrink: 0;
+      animation: pulse 1s ease-in-out infinite;
+    }
+    #statusDot.ok { background: #00ff88; animation: none; }
+    #statusDot.error { background: #ff3c3c; animation: none; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    #statusBarText {
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: #fff;
+      text-transform: uppercase;
+      flex: 1;
+    }
+
+    /* ── Error overlay ── */
+    #errorOverlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 500;
+      background: rgba(10,10,15,0.92);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 30px;
+      gap: 16px;
+      text-align: center;
+    }
+    #errorOverlay.visible { display: flex; }
+    #errorTitle {
+      font-size: 18px;
+      color: #ff3c3c;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+    #errorDetail {
+      font-size: 13px;
+      color: #ffaaaa;
+      line-height: 1.6;
+      max-width: 420px;
+      word-break: break-word;
+    }
+    #retryBtn {
+      margin-top: 10px;
+      background: rgba(255,60,60,0.15);
+      border: 1.5px solid #ff3c3c;
+      color: #ff3c3c;
+      border-radius: 50px;
+      padding: 10px 28px;
+      font-size: 13px;
+      letter-spacing: 2px;
+      cursor: pointer;
+      text-transform: uppercase;
+      pointer-events: all;
+    }
+    #retryBtn:active { transform: scale(0.95); }
+
+    #stats {
+      position: absolute;
+      top: 56px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 20px;
+      pointer-events: none;
+      z-index: 15;
+    }
+
+    .stat-box {
+      background: rgba(0,0,0,0.6);
+      border: 1px solid rgba(0,255,231,0.4);
+      border-radius: 6px;
+      padding: 6px 14px;
+      text-align: center;
+      backdrop-filter: blur(4px);
+    }
+
+    .stat-label {
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: #00ffe7;
+      text-transform: uppercase;
+      opacity: 0.8;
+    }
+
+    .stat-value {
+      font-size: 22px;
+      font-weight: bold;
+      color: #ffffff;
+      line-height: 1.1;
+    }
+
+    .stat-value.fps { color: #00ff88; font-size: 18px; }
+
+    #scanLine {
+      position: absolute;
+      left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #ff0, #ff0, transparent);
+      box-shadow: 0 0 12px 2px #ff0;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 20;
+      transition: opacity 0.1s;
+    }
+
+    #bottomBar {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: linear-gradient(transparent, rgba(0,0,0,0.7));
+      z-index: 15;
+    }
+
+    #statusMsg {
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: rgba(0,255,231,0.7);
+      text-transform: uppercase;
+    }
+
+    #switchCamBtn {
+      pointer-events: all;
+      background: rgba(0,0,0,0.5);
+      border: 1.5px solid rgba(0,255,231,0.5);
+      color: #00ffe7;
+      border-radius: 50px;
+      padding: 8px 18px;
+      font-size: 12px;
+      letter-spacing: 1px;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    #switchCamBtn:hover { background: rgba(0,255,231,0.15); border-color: #00ffe7; }
+    #switchCamBtn:active { transform: scale(0.95); }
+    #switchCamBtn svg { width: 16px; height: 16px; fill: #00ffe7; }
+
+    #trackerList {
+      position: absolute;
+      top: 136px;
+      right: 14px;
+      width: 130px;
+      pointer-events: none;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .tracker-entry {
+      background: rgba(0,0,0,0.55);
+      border-left: 3px solid;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 10px;
+      letter-spacing: 1px;
+      backdrop-filter: blur(3px);
+      animation: fadeIn 0.3s ease;
+    }
+
+    .tracker-entry.known { border-color: #00ffe7; color: #00ffe7; }
+    .tracker-entry.new   { border-color: #ffcc00; color: #ffcc00; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    /* ── Loading overlay ── */
+    #loadingOverlay {
+      position: absolute;
+      inset: 0;
+      background: #0a0a0f;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      z-index: 999;
+      transition: opacity 0.5s;
+    }
+    #loadingOverlay.hidden { opacity: 0; pointer-events: none; }
+
+    .spinner {
+      width: 50px; height: 50px;
+      border: 3px solid rgba(0,255,231,0.2);
+      border-top-color: #00ffe7;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text {
+      color: #00ffe7;
+      font-size: 13px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      opacity: 0.8;
+    }
+    #loadingStep {
+      color: #aaa;
+      font-size: 11px;
+      letter-spacing: 1px;
+      max-width: 300px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<div id="container">
+
+  <!-- Loading overlay -->
+  <div id="loadingOverlay">
+    <div class="spinner"></div>
+    <div class="loading-text">Đang khởi động AI...</div>
+    <div id="loadingStep">Chuẩn bị camera...</div>
+  </div>
+
+  <!-- Error overlay -->
+  <div id="errorOverlay">
+    <div id="errorTitle">⚠ Lỗi Khởi Tạo</div>
+    <div id="errorDetail">Đã xảy ra lỗi không xác định.</div>
+    <button id="retryBtn">↺ Thử lại</button>
+  </div>
+
+  <!--
+    VIDEO ELEMENT:
+    - autoplay   : tự phát khi stream sẵn sàng
+    - playsinline: BẮT BUỘC cho iOS/Android — không có thuộc tính này trình duyệt
+                   di động sẽ chặn khung hình ngầm, MediaPipe không nhận được ảnh
+    - muted      : bắt buộc kèm autoplay trên nhiều trình duyệt di động
+  -->
+  <video id="videoElement" autoplay playsinline muted></video>
+  <canvas id="outputCanvas"></canvas>
+
+  <!-- HUD corner decorations -->
+  <div id="hud">
+    <div class="corner corner-tl"></div>
+    <div class="corner corner-tr"></div>
+    <div class="corner corner-bl"></div>
+    <div class="corner corner-br"></div>
+  </div>
+
+  <!-- Scan line effect -->
+  <div id="scanLine"></div>
+
+  <!-- Status bar (debug / trạng thái khởi động) -->
+  <div id="statusBar">
+    <div id="statusDot"></div>
+    <div id="statusBarText">1. Đang khởi tạo camera...</div>
+  </div>
+
+  <!-- Stats -->
+  <div id="stats">
+    <div class="stat-box">
+      <div class="stat-label">Hiện tại</div>
+      <div class="stat-value" id="currentCount">0</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Tổng phát hiện</div>
+      <div class="stat-value" id="totalCount">0</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">FPS</div>
+      <div class="stat-value fps" id="fpsDisplay">--</div>
+    </div>
+  </div>
+
+  <!-- Tracker list -->
+  <div id="trackerList"></div>
+
+  <!-- Bottom bar -->
+  <div id="bottomBar">
+    <div id="statusMsg">▶ Scanning...</div>
+    <button id="switchCamBtn">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M20 5h-3.17L15 3H9L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-8 13c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+        <path d="M4 12l1.41 1.41L7 11.83V15c0 1.66 1.34 3 3 3h2v-2H10c-.55 0-1-.45-1-1v-3.17l1.59 1.59L12 12l-4-4-4 4zm16 0l-1.41-1.41L17 12.17V9c0-1.66-1.34-3-3-3h-2v2h2c.55 0 1 .45 1 1v3.17l-1.59-1.59L12 12l4 4 4-4z"/>
+      </svg>
+      Đổi camera
+    </button>
+  </div>
+
+</div>
+
+<!--
+  MediaPipe CDN — thứ tự quan trọng:
+  1. camera_utils: lớp Camera helper
+  2. drawing_utils: FACEMESH_TESSELATION, FACEMESH_FACE_OVAL, v.v.
+  3. face_mesh: lớp FaceMesh chính + file WASM
+-->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+<script>
+'use strict';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GLOBAL ERROR HANDLER — bắt mọi lỗi JS không được xử lý & hiển thị cho user
+// ═══════════════════════════════════════════════════════════════════════════════
+window.onerror = function(message, source, lineno, colno, error) {
+  showError('Lỗi JavaScript',
+    `${message}\n(${source ? source.split('/').pop() : 'unknown'}:${lineno}:${colno})`);
+  return true; // prevent default console error
+};
+
+window.onunhandledrejection = function(event) {
+  showError('Lỗi Promise không được xử lý', String(event.reason));
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOM REFS
+// ═══════════════════════════════════════════════════════════════════════════════
+const video            = document.getElementById('videoElement');
+const canvas           = document.getElementById('outputCanvas');
+const ctx              = canvas.getContext('2d');
+const scanLine         = document.getElementById('scanLine');
+const statusMsg        = document.getElementById('statusMsg');
+const currentCountEl   = document.getElementById('currentCount');
+const totalCountEl     = document.getElementById('totalCount');
+const fpsEl            = document.getElementById('fpsDisplay');
+const trackerListEl    = document.getElementById('trackerList');
+const loadingOverlay   = document.getElementById('loadingOverlay');
+const loadingStepEl    = document.getElementById('loadingStep');
+const switchCamBtn     = document.getElementById('switchCamBtn');
+const statusBar        = document.getElementById('statusBar');
+const statusDot        = document.getElementById('statusDot');
+const statusBarText    = document.getElementById('statusBarText');
+const errorOverlay     = document.getElementById('errorOverlay');
+const errorDetailEl    = document.getElementById('errorDetail');
+const retryBtn         = document.getElementById('retryBtn');
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATUS BAR HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+function setStatus(text, state /* 'loading' | 'ok' | 'error' */ = 'loading') {
+  statusBarText.textContent = text;
+  statusDot.className = state === 'ok' ? 'ok' : state === 'error' ? 'error' : '';
+}
+
+function hideStatusBar() {
+  statusBar.classList.add('hidden');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ERROR OVERLAY
+// ═══════════════════════════════════════════════════════════════════════════════
+function showError(title, detail) {
+  loadingOverlay.classList.add('hidden');
+  document.getElementById('errorTitle').textContent = '⚠ ' + title;
+  errorDetailEl.textContent = detail;
+  errorOverlay.classList.add('visible');
+  setStatus('Lỗi: ' + title, 'error');
+  console.error('[FaceDetector]', title, detail);
+}
+
+function hideError() {
+  errorOverlay.classList.remove('visible');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDIO BEEP
+// ═══════════════════════════════════════════════════════════════════════════════
+let audioCtx = null;
+
+function getAudioCtx() {
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch(e) {}
+  }
+  return audioCtx;
+}
+
+function playBeep(freq = 880, dur = 0.12, vol = 0.3) {
+  try {
+    const ctx = getAudioCtx();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(vol, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + dur);
+  } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+let useFrontCamera    = true;
+let currentStream     = null;
+let mediapipeCamera   = null;
+let faceMesh          = null;
+
+let nextTrackerId  = 1;
+let totalDetected  = 0;
+let trackers       = []; // { id, color, isNew }
+
+let scanAnimActive = false;
+
+// FPS counters
+let frameCount = 0;
+let fpsTimer   = performance.now();
+
+// Mesh constants (populated after FaceMesh script loads)
+let TESSELATION = [];
+let CONTOURS    = [];
+let LIPS        = [];
+let LEFT_EYE    = [];
+let RIGHT_EYE   = [];
+
+// Colors
+const COLOR_KNOWN = '#00ffe7';
+const COLOR_NEW   = '#ffcc00';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCAN LINE ANIMATION
+// ═══════════════════════════════════════════════════════════════════════════════
+function triggerScanAnimation() {
+  if (scanAnimActive) return;
+  scanAnimActive = true;
+  scanLine.style.opacity = '1';
+  let y = 0, dir = 1, passes = 0;
+
+  function animStep() {
+    y += dir * 4;
+    if (y >= window.innerHeight) { dir = -1; passes++; }
+    if (y <= 0 && passes > 0)   { dir =  1; passes++; }
+    scanLine.style.top = y + 'px';
+    if (passes >= 2) {
+      scanLine.style.opacity = '0';
+      scanAnimActive = false;
+      return;
+    }
+    requestAnimationFrame(animStep);
+  }
+  requestAnimationFrame(animStep);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRACKER LIST UI
+// ═══════════════════════════════════════════════════════════════════════════════
+function updateTrackerListUI() {
+  trackerListEl.innerHTML = '';
+  trackers.forEach(t => {
+    const el = document.createElement('div');
+    el.className = 'tracker-entry ' + (t.isNew ? 'new' : 'known');
+    el.textContent = `ID #${t.id}`;
+    trackerListEl.appendChild(el);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FACE RECONCILIATION
+// ═══════════════════════════════════════════════════════════════════════════════
+let prevFaceCount = 0;
+
+function reconcileTrackers(faceCount) {
+  if (faceCount === prevFaceCount) {
+    trackers.forEach(t => t.isNew = false);
+    return;
+  }
+
+  if (faceCount > prevFaceCount) {
+    const added = faceCount - prevFaceCount;
+    for (let i = 0; i < added; i++) {
+      totalDetected++;
+      const newTracker = { id: nextTrackerId++, isNew: true, color: COLOR_NEW };
+      trackers.push(newTracker);
+      triggerScanAnimation();
+      playBeep(1200 + i * 200, 0.14, 0.25);
+      (function(t) {
+        setTimeout(() => { t.isNew = false; t.color = COLOR_KNOWN; updateTrackerListUI(); }, 2000);
+      })(newTracker);
+    }
+    totalCountEl.textContent = totalDetected;
+  } else {
+    const removed = prevFaceCount - faceCount;
+    for (let i = 0; i < removed; i++) trackers.pop();
+  }
+
+  prevFaceCount = faceCount;
+  updateTrackerListUI();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DRAW FACE MESH
+// ═══════════════════════════════════════════════════════════════════════════════
+function drawConnectors(pairs, color, lineWidth) {
+  const W = canvas.width, H = canvas.height;
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = lineWidth;
+  ctx.beginPath();
+  pairs.forEach(([a, b]) => {
+    const p1 = pairs[0] !== undefined ? null : null; // reset trick
+    const lm1 = currentLandmarks[a];
+    const lm2 = currentLandmarks[b];
+    if (!lm1 || !lm2) return;
+    ctx.moveTo(lm1.x * W, lm1.y * H);
+    ctx.lineTo(lm2.x * W, lm2.y * H);
+  });
+  ctx.stroke();
+}
+
+// We use a module-level variable to pass landmarks into drawConnectors cleanly
+let currentLandmarks = [];
+
+function drawFaceMesh(landmarks, faceIndex) {
+  currentLandmarks = landmarks;
+  const tracker  = trackers[faceIndex] || { color: COLOR_KNOWN, isNew: false };
+  const baseColor = tracker.color;
+  const alpha     = tracker.isNew ? 0.95 : 0.65;
+  const W = canvas.width, H = canvas.height;
+
+  function connectors(pairs, color, lw) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = lw;
+    ctx.beginPath();
+    pairs.forEach(([a, b]) => {
+      const p1 = landmarks[a], p2 = landmarks[b];
+      if (!p1 || !p2) return;
+      ctx.moveTo(p1.x * W, p1.y * H);
+      ctx.lineTo(p2.x * W, p2.y * H);
+    });
+    ctx.stroke();
+  }
+
+  // Tesselation (fine mesh)
+  if (TESSELATION.length) {
+    ctx.globalAlpha = alpha * 0.35;
+    connectors(TESSELATION, baseColor, 0.5);
+  }
+
+  // Face contours, lips, eyes
+  ctx.globalAlpha = alpha;
+  if (CONTOURS.length)   connectors(CONTOURS,   baseColor, 1.5);
+  if (LIPS.length)       connectors(LIPS,        baseColor, 1.5);
+  if (LEFT_EYE.length)   connectors(LEFT_EYE,    baseColor, 1.5);
+  if (RIGHT_EYE.length)  connectors(RIGHT_EYE,   baseColor, 1.5);
+
+  // Key landmark dots
+  ctx.globalAlpha = alpha;
+  const keyPoints = [1, 4, 33, 263, 61, 291, 199, 10, 152, 234, 454, 468, 473];
+  keyPoints.forEach(idx => {
+    const p = landmarks[idx];
+    if (!p) return;
+    ctx.beginPath();
+    ctx.arc(p.x * W, p.y * H, tracker.isNew ? 3 : 2, 0, Math.PI * 2);
+    ctx.fillStyle = baseColor;
+    ctx.fill();
+  });
+
+  // Face ID label near nose tip
+  const nose = landmarks[1];
+  if (nose) {
+    ctx.globalAlpha = 1;
+    ctx.font        = 'bold 12px Courier New';
+    ctx.fillStyle   = baseColor;
+    const label = tracker.isNew ? `⚡ NEW #${tracker.id}` : `✦ #${tracker.id}`;
+    ctx.shadowColor = baseColor;
+    ctx.shadowBlur  = 8;
+    ctx.fillText(label, nose.x * W - 20, nose.y * H - 30);
+    ctx.shadowBlur  = 0;
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MEDIAPIPE RESULTS CALLBACK
+// ═══════════════════════════════════════════════════════════════════════════════
+function onResults(results) {
+  // FPS calculation
+  frameCount++;
+  const now = performance.now();
+  if (now - fpsTimer >= 1000) {
+    fpsEl.textContent = Math.round(frameCount * 1000 / (now - fpsTimer));
+    frameCount = 0;
+    fpsTimer   = now;
+  }
+
+  // ── CRITICAL: sync canvas size from the actual video frame, not CSS ──
+  // results.image is an HTMLVideoElement; use its intrinsic dimensions.
+  const imgW = results.image.videoWidth  || results.image.width  || video.videoWidth  || 640;
+  const imgH = results.image.videoHeight || results.image.height || video.videoHeight || 480;
+  if (canvas.width !== imgW || canvas.height !== imgH) {
+    canvas.width  = imgW;
+    canvas.height = imgH;
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw camera frame (mirrored to match CSS transform on video)
+  ctx.save();
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+
+  // Mirror landmarks drawing as well
+  ctx.save();
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+
+  if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+    const faceCount = results.multiFaceLandmarks.length;
+    reconcileTrackers(faceCount);
+    currentCountEl.textContent = faceCount;
+    results.multiFaceLandmarks.forEach((landmarks, i) => drawFaceMesh(landmarks, i));
+    statusMsg.textContent = `▶ ${faceCount} khuôn mặt được phát hiện`;
+  } else {
+    reconcileTrackers(0);
+    currentCountEl.textContent = '0';
+    statusMsg.textContent = '◉ Đang quét...';
+  }
+
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MEDIAPIPE FACEMESH INIT
+// ═══════════════════════════════════════════════════════════════════════════════
+async function initFaceMesh() {
+  setStatus('2. Đang tải mô hình MediaPipe...', 'loading');
+  updateLoadingStep('Đang tải mô hình nhận diện khuôn mặt...');
+
+  faceMesh = new FaceMesh({
+    // locateFile đúng chuẩn — chỉ định rõ CDN chứa file WASM / bin
+    // thiếu dòng này trình duyệt di động sẽ tìm file nhị phân ở đường dẫn
+    // sai và FaceMesh im lặng thất bại
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+  });
+
+  // maxNumFaces = 5 lúc khởi động để tránh tràn bộ nhớ WebGL trên GPU di động.
+  // Người dùng có thể tăng qua console: faceMesh.setOptions({maxNumFaces:30})
+  faceMesh.setOptions({
+    maxNumFaces:          5,
+    refineLandmarks:      true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence:  0.5,
+  });
+
+  faceMesh.onResults(onResults);
+
+  // Warm-up: gửi 1 frame trắng để WASM nạp xong trước khi camera bật
+  // (tránh lag / crash frame đầu trên thiết bị yếu)
+  try {
+    const warmup = document.createElement('canvas');
+    warmup.width = 320; warmup.height = 240;
+    await faceMesh.send({ image: warmup });
+  } catch(e) {
+    // Warm-up có thể thất bại vô hại — bỏ qua
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CAMERA SETUP
+// ═══════════════════════════════════════════════════════════════════════════════
+function updateLoadingStep(text) {
+  if (loadingStepEl) loadingStepEl.textContent = text;
+}
+
+async function startCamera() {
+  hideError();
+
+  // Stop previous stream / camera if any
+  if (mediapipeCamera) { try { mediapipeCamera.stop(); } catch(e) {} }
+  if (currentStream)   { currentStream.getTracks().forEach(t => t.stop()); }
+
+  setStatus('1. Đang khởi tạo camera...', 'loading');
+  updateLoadingStep('Đang xin quyền truy cập camera...');
+
+  // Try preferred resolution first; fall back to basic constraints for older devices
+  const constraintSets = [
+    {
+      video: {
+        facingMode: useFrontCamera ? 'user' : 'environment',
+        width:  { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+      audio: false,
+    },
+    {
+      video: { facingMode: useFrontCamera ? 'user' : 'environment' },
+      audio: false,
+    },
+    { video: true, audio: false },
+  ];
+
+  let stream = null;
+  let lastErr = null;
+
+  for (const constraints of constraintSets) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      break;
+    } catch(err) {
+      lastErr = err;
+    }
+  }
+
+  if (!stream) {
+    let detail = lastErr ? lastErr.message : 'Không rõ nguyên nhân.';
+    if (lastErr && lastErr.name === 'NotAllowedError') {
+      detail = 'Quyền truy cập camera bị từ chối. Vui lòng cấp quyền camera trong cài đặt trình duyệt rồi tải lại trang.';
+    } else if (lastErr && lastErr.name === 'NotFoundError') {
+      detail = 'Không tìm thấy camera nào trên thiết bị này.';
+    } else if (lastErr && lastErr.name === 'NotReadableError') {
+      detail = 'Camera đang được ứng dụng khác sử dụng. Vui lòng đóng các ứng dụng khác rồi thử lại.';
+    } else if (lastErr && lastErr.name === 'OverconstrainedError') {
+      detail = 'Camera không hỗ trợ cấu hình yêu cầu: ' + (lastErr.constraint || '') + '.';
+    }
+    showError('Không thể truy cập camera', detail);
+    return;
+  }
+
+  currentStream = stream;
+  video.srcObject = stream;
+  video.style.transform = useFrontCamera ? 'scaleX(-1)' : 'scaleX(1)';
+
+  // ── CRITICAL: đồng bộ kích thước canvas NGAY KHI metadata sẵn sàng ──
+  // Phải đặt canvas.width / height bằng videoWidth / videoHeight thực tế,
+  // không dùng kích thước CSS — nếu không MediaPipe sẽ vẽ sai tỷ lệ
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Video metadata timeout')), 10000);
+    video.onloadedmetadata = () => {
+      clearTimeout(timer);
+      canvas.width  = video.videoWidth  || 640;
+      canvas.height = video.videoHeight || 480;
+      resolve();
+    };
+  });
+
+  // Đảm bảo video thực sự đang play (cần thiết trên một số trình duyệt Android)
+  try { await video.play(); } catch(e) { /* autoplay đã xử lý */ }
+
+  updateLoadingStep('Camera sẵn sàng. Đang tải mô hình AI...');
+
+  // Khởi tạo FaceMesh nếu chưa có
+  if (!faceMesh) {
+    await initFaceMesh();
+  }
+
+  setStatus('3. Camera sẵn sàng, đang tìm khuôn mặt...', 'loading');
+  updateLoadingStep('Đang khởi chạy nhận diện khuôn mặt...');
+
+  // Dùng MediaPipe Camera helper để pump frame đều đặn
+  mediapipeCamera = new Camera(video, {
+    onFrame: async () => {
+      if (faceMesh && video.readyState >= 2) {
+        try {
+          await faceMesh.send({ image: video });
+        } catch(e) {
+          console.warn('[FaceDetector] faceMesh.send error:', e);
+        }
+      }
+    },
+    // Dùng kích thước thực của video thay vì hard-code 1280×720
+    width:  video.videoWidth  || 640,
+    height: video.videoHeight || 480,
+  });
+
+  try {
+    await mediapipeCamera.start();
+  } catch(e) {
+    showError('Không thể khởi động MediaPipe Camera', e.message || String(e));
+    return;
+  }
+
+  // Ẩn loading overlay, cập nhật status bar
+  loadingOverlay.classList.add('hidden');
+  setStatus('3. Camera sẵn sàng, đang tìm khuôn mặt', 'ok');
+
+  // Ẩn status bar sau 4 giây (vẫn giữ nếu gặp lỗi)
+  setTimeout(() => hideStatusBar(), 4000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SWITCH CAMERA
+// ═══════════════════════════════════════════════════════════════════════════════
+switchCamBtn.addEventListener('click', async () => {
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  useFrontCamera = !useFrontCamera;
+  loadingOverlay.classList.remove('hidden');
+  statusBar.classList.remove('hidden');
+  await startCamera();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RETRY BUTTON
+// ═══════════════════════════════════════════════════════════════════════════════
+retryBtn.addEventListener('click', async () => {
+  loadingOverlay.classList.remove('hidden');
+  statusBar.classList.remove('hidden');
+  await startCamera();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BOOTSTRAP — load mesh constants sau khi scripts mediapipe đã parse xong
+// ═══════════════════════════════════════════════════════════════════════════════
+(async () => {
+  try {
+    // Lấy hằng số FACEMESH từ window (được set bởi drawing_utils.js)
+    TESSELATION = window.FACEMESH_TESSELATION || [];
+    CONTOURS    = window.FACEMESH_FACE_OVAL   || [];
+    LIPS        = window.FACEMESH_LIPS        || [];
+    LEFT_EYE    = window.FACEMESH_LEFT_EYE    || [];
+    RIGHT_EYE   = window.FACEMESH_RIGHT_EYE   || [];
+
+    await startCamera();
+  } catch(err) {
+    showError('Lỗi khởi động', err.message || String(err));
+  }
+})();
+</script>
+</body>
+</html>
