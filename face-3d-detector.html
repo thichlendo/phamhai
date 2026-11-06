@@ -674,10 +674,45 @@ function drawFaceMesh(landmarks, faceIndex) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // MEDIAPIPE RESULTS CALLBACK
 // ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// THROTTLE + DUPLICATE FILTER
+// ═══════════════════════════════════════════════════════════════════════════════
+let _lastResultsTs = 0;
+
+// Euclidean distance giữa 2 điểm landmark (toạ độ chuẩn hoá 0-1)
+function euclidean(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+// Trả về true nếu khuôn mặt mới trùng với 1 khuôn mặt đã được cache
+// (so sánh 5 điểm đặc trưng: mũi, 2 mắt, 2 khoé miệng)
+const KEY_IDX = [1, 33, 263, 61, 291];
+let _prevCentroids = []; // mảng {x,y} của từng face frame trước
+
+function isDuplicateFace(landmarks, prevCentroid) {
+  if (!prevCentroid) return false;
+  let dist = 0;
+  KEY_IDX.forEach(i => {
+    dist += euclidean(landmarks[i], prevCentroid[i] || { x: 0, y: 0 });
+  });
+  return (dist / KEY_IDX.length) < 0.015; // ngưỡng: dịch chuyển < 1.5% frame
+}
+
+function extractCentroid(landmarks) {
+  const c = {};
+  KEY_IDX.forEach(i => { c[i] = { x: landmarks[i].x, y: landmarks[i].y }; });
+  return c;
+}
+
 function onResults(results) {
+  // ── Throttle 30ms: bỏ qua frame nếu chưa đủ thời gian ──
+  const now = performance.now();
+  if (now - _lastResultsTs < 30) return;
+  _lastResultsTs = now;
+
   // FPS calculation
   frameCount++;
-  const now = performance.now();
   if (now - fpsTimer >= 1000) {
     fpsEl.textContent = Math.round(frameCount * 1000 / (now - fpsTimer));
     frameCount = 0;
@@ -711,11 +746,20 @@ function onResults(results) {
     const faceCount = results.multiFaceLandmarks.length;
     reconcileTrackers(faceCount);
     currentCountEl.textContent = faceCount;
-    results.multiFaceLandmarks.forEach((landmarks, i) => drawFaceMesh(landmarks, i));
+
+    // Lọc duplicate: chỉ vẽ mesh cho khuôn mặt có di chuyển đáng kể
+    results.multiFaceLandmarks.forEach((landmarks, i) => {
+      const isDup = isDuplicateFace(landmarks, _prevCentroids[i]);
+      if (!isDup) drawFaceMesh(landmarks, i);
+    });
+    // Cập nhật centroid cache cho frame tiếp theo
+    _prevCentroids = results.multiFaceLandmarks.map(extractCentroid);
+
     statusMsg.textContent = `▶ ${faceCount} khuôn mặt được phát hiện`;
   } else {
     reconcileTrackers(0);
     currentCountEl.textContent = '0';
+    _prevCentroids = [];
     statusMsg.textContent = '◉ Đang quét...';
   }
 
@@ -740,7 +784,7 @@ async function initFaceMesh() {
   // Người dùng có thể tăng qua console: faceMesh.setOptions({maxNumFaces:30})
   faceMesh.setOptions({
     maxNumFaces:          5,
-    refineLandmarks:      true,
+    refineLandmarks:      false, // tắt để tiết kiệm GPU trên di động
     minDetectionConfidence: 0.5,
     minTrackingConfidence:  0.5,
   });
@@ -780,8 +824,8 @@ async function startCamera() {
     {
       video: {
         facingMode: useFrontCamera ? 'user' : 'environment',
-        width:  { ideal: 1280 },
-        height: { ideal: 720 },
+        width:  { ideal: 640 },
+        height: { ideal: 480 },
       },
       audio: false,
     },
@@ -862,7 +906,7 @@ async function startCamera() {
     },
     // Dùng kích thước thực của video thay vì hard-code 1280×720
     width:  video.videoWidth  || 640,
-    height: video.videoHeight || 480,
+    height: video.videoHeight || 480, // 480p — giới hạn input để giảm tải GPU
   });
 
   try {
