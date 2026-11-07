@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>3D Face Mesh Detector</title>
+  <title>TrueDepth 3D Face Scanner — HD</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      background: #0a0a0f;
+      background: #050508;
       color: #e0e0e0;
       font-family: 'Courier New', monospace;
       overflow: hidden;
@@ -25,20 +25,32 @@
       justify-content: center;
     }
 
-    /* ── Video element: playsinline is MANDATORY for iOS/Android inline playback ── */
     #videoElement {
       position: absolute;
       width: 100%;
       height: 100%;
       object-fit: cover;
       transform: scaleX(-1);
+      opacity: 0; /* hidden — we draw to WebGL canvas instead */
     }
 
-    #outputCanvas {
+    /* WebGL canvas for the dot projector */
+    #glCanvas {
       position: absolute;
       width: 100%;
       height: 100%;
       top: 0; left: 0;
+      z-index: 2;
+    }
+
+    /* 2D HUD overlay canvas */
+    #hudCanvas {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      top: 0; left: 0;
+      z-index: 3;
+      pointer-events: none;
     }
 
     /* HUD overlay */
@@ -50,7 +62,6 @@
       z-index: 10;
     }
 
-    /* Corner decorations */
     .corner {
       position: absolute;
       width: 30px; height: 30px;
@@ -63,7 +74,7 @@
     .corner-bl { bottom: 12px; left: 12px; border-width: 0 0 2px 2px; }
     .corner-br { bottom: 12px; right: 12px; border-width: 0 2px 2px 0; }
 
-    /* ── Status Bar (debug / trạng thái khởi động) ── */
+    /* ── Status Bar ── */
     #statusBar {
       position: absolute;
       top: 0; left: 0; right: 0;
@@ -145,28 +156,31 @@
     }
     #retryBtn:active { transform: scale(0.95); }
 
+    /* ── Stats HUD ── */
     #stats {
       position: absolute;
       top: 56px;
       left: 50%;
       transform: translateX(-50%);
       display: flex;
-      gap: 20px;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
       pointer-events: none;
       z-index: 15;
     }
 
     .stat-box {
-      background: rgba(0,0,0,0.6);
+      background: rgba(0,0,0,0.65);
       border: 1px solid rgba(0,255,231,0.4);
       border-radius: 6px;
-      padding: 6px 14px;
+      padding: 5px 12px;
       text-align: center;
       backdrop-filter: blur(4px);
     }
 
     .stat-label {
-      font-size: 9px;
+      font-size: 8px;
       letter-spacing: 2px;
       color: #00ffe7;
       text-transform: uppercase;
@@ -174,20 +188,22 @@
     }
 
     .stat-value {
-      font-size: 22px;
+      font-size: 18px;
       font-weight: bold;
       color: #ffffff;
       line-height: 1.1;
     }
 
-    .stat-value.fps { color: #00ff88; font-size: 18px; }
+    .stat-value.fps { color: #00ff88; }
+    .stat-value.res { color: #c084fc; font-size: 13px; }
+    .stat-value.pts { color: #00e5ff; }
 
     #scanLine {
       position: absolute;
       left: 0; right: 0;
       height: 2px;
-      background: linear-gradient(90deg, transparent, #ff0, #ff0, transparent);
-      box-shadow: 0 0 12px 2px #ff0;
+      background: linear-gradient(90deg, transparent, #00ffe7, #00e5ff, transparent);
+      box-shadow: 0 0 20px 4px rgba(0,229,255,0.6);
       opacity: 0;
       pointer-events: none;
       z-index: 20;
@@ -236,7 +252,7 @@
       position: absolute;
       top: 136px;
       right: 14px;
-      width: 130px;
+      width: 140px;
       pointer-events: none;
       z-index: 10;
       display: flex;
@@ -267,7 +283,7 @@
     #loadingOverlay {
       position: absolute;
       inset: 0;
-      background: #0a0a0f;
+      background: #050508;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -310,7 +326,7 @@
   <!-- Loading overlay -->
   <div id="loadingOverlay">
     <div class="spinner"></div>
-    <div class="loading-text">Đang khởi động AI...</div>
+    <div class="loading-text">TrueDepth 3D Scanner</div>
     <div id="loadingStep">Chuẩn bị camera...</div>
   </div>
 
@@ -321,15 +337,9 @@
     <button id="retryBtn">↺ Thử lại</button>
   </div>
 
-  <!--
-    VIDEO ELEMENT:
-    - autoplay   : tự phát khi stream sẵn sàng
-    - playsinline: BẮT BUỘC cho iOS/Android — không có thuộc tính này trình duyệt
-                   di động sẽ chặn khung hình ngầm, MediaPipe không nhận được ảnh
-    - muted      : bắt buộc kèm autoplay trên nhiều trình duyệt di động
-  -->
   <video id="videoElement" autoplay playsinline muted></video>
-  <canvas id="outputCanvas"></canvas>
+  <canvas id="glCanvas"></canvas>
+  <canvas id="hudCanvas"></canvas>
 
   <!-- HUD corner decorations -->
   <div id="hud">
@@ -342,25 +352,33 @@
   <!-- Scan line effect -->
   <div id="scanLine"></div>
 
-  <!-- Status bar (debug / trạng thái khởi động) -->
+  <!-- Status bar -->
   <div id="statusBar">
     <div id="statusDot"></div>
-    <div id="statusBarText">1. Đang khởi tạo camera...</div>
+    <div id="statusBarText">1. Đang khởi tạo camera HD...</div>
   </div>
 
   <!-- Stats -->
   <div id="stats">
     <div class="stat-box">
-      <div class="stat-label">Hiện tại</div>
+      <div class="stat-label">Faces</div>
       <div class="stat-value" id="currentCount">0</div>
     </div>
     <div class="stat-box">
-      <div class="stat-label">Tổng phát hiện</div>
+      <div class="stat-label">Total</div>
       <div class="stat-value" id="totalCount">0</div>
     </div>
     <div class="stat-box">
       <div class="stat-label">FPS</div>
       <div class="stat-value fps" id="fpsDisplay">--</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Resolution</div>
+      <div class="stat-value res" id="resDisplay">--</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">3D Points</div>
+      <div class="stat-value pts" id="pointCount">0</div>
     </div>
   </div>
 
@@ -369,11 +387,10 @@
 
   <!-- Bottom bar -->
   <div id="bottomBar">
-    <div id="statusMsg">▶ Scanning...</div>
+    <div id="statusMsg">▶ TrueDepth Scanning...</div>
     <button id="switchCamBtn">
       <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
         <path d="M20 5h-3.17L15 3H9L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-8 13c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
-        <path d="M4 12l1.41 1.41L7 11.83V15c0 1.66 1.34 3 3 3h2v-2H10c-.55 0-1-.45-1-1v-3.17l1.59 1.59L12 12l-4-4-4 4zm16 0l-1.41-1.41L17 12.17V9c0-1.66-1.34-3-3-3h-2v2h2c.55 0 1 .45 1 1v3.17l-1.59-1.59L12 12l4 4 4-4z"/>
       </svg>
       Đổi camera
     </button>
@@ -382,10 +399,10 @@
 </div>
 
 <!--
-  MediaPipe CDN — thứ tự quan trọng:
-  1. camera_utils: lớp Camera helper
-  2. drawing_utils: FACEMESH_TESSELATION, FACEMESH_FACE_OVAL, v.v.
-  3. face_mesh: lớp FaceMesh chính + file WASM
+  MediaPipe CDN:
+  1. camera_utils
+  2. drawing_utils (for FACEMESH_TESSELATION constants)
+  3. face_mesh
 -->
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
@@ -395,12 +412,12 @@
 'use strict';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// GLOBAL ERROR HANDLER — bắt mọi lỗi JS không được xử lý & hiển thị cho user
+// GLOBAL ERROR HANDLER
 // ═══════════════════════════════════════════════════════════════════════════════
 window.onerror = function(message, source, lineno, colno, error) {
   showError('Lỗi JavaScript',
     `${message}\n(${source ? source.split('/').pop() : 'unknown'}:${lineno}:${colno})`);
-  return true; // prevent default console error
+  return true;
 };
 
 window.onunhandledrejection = function(event) {
@@ -411,13 +428,16 @@ window.onunhandledrejection = function(event) {
 // DOM REFS
 // ═══════════════════════════════════════════════════════════════════════════════
 const video            = document.getElementById('videoElement');
-const canvas           = document.getElementById('outputCanvas');
-const ctx              = canvas.getContext('2d');
+const glCanvas         = document.getElementById('glCanvas');
+const hudCanvas        = document.getElementById('hudCanvas');
+const hudCtx           = hudCanvas.getContext('2d');
 const scanLine         = document.getElementById('scanLine');
 const statusMsg        = document.getElementById('statusMsg');
 const currentCountEl   = document.getElementById('currentCount');
 const totalCountEl     = document.getElementById('totalCount');
 const fpsEl            = document.getElementById('fpsDisplay');
+const resEl            = document.getElementById('resDisplay');
+const pointCountEl     = document.getElementById('pointCount');
 const trackerListEl    = document.getElementById('trackerList');
 const loadingOverlay   = document.getElementById('loadingOverlay');
 const loadingStepEl    = document.getElementById('loadingStep');
@@ -430,20 +450,123 @@ const errorDetailEl    = document.getElementById('errorDetail');
 const retryBtn         = document.getElementById('retryBtn');
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STATUS BAR HELPERS
+// WEBGL SETUP — DOT PROJECTOR RENDERER
 // ═══════════════════════════════════════════════════════════════════════════════
-function setStatus(text, state /* 'loading' | 'ok' | 'error' */ = 'loading') {
+const gl = glCanvas.getContext('webgl', { alpha: true, antialias: false, premultipliedAlpha: false });
+if (!gl) { alert('WebGL not supported'); }
+
+// ── Vertex Shader: renders gl.POINTS with depth-based size & brightness ──
+const VERT_SRC = `
+  attribute vec3 aPosition;   // x, y in normalized [0,1] coords; z = depth
+  uniform vec2 uResolution;   // canvas pixel size
+  uniform float uPointScale;  // base point size multiplier
+  uniform float uScanY;       // scanline Y position [0..1], -1 = off
+  uniform float uTime;        // animation time
+  varying float vBrightness;
+  varying float vScanDist;
+  varying float vDepth;
+
+  void main() {
+    // Map from [0,1] to clip space [-1,1], flip Y
+    float cx = aPosition.x * 2.0 - 1.0;
+    float cy = 1.0 - aPosition.y * 2.0;
+    gl_Position = vec4(cx, cy, 0.0, 1.0);
+
+    // Depth: z ~ 0 = far, z ~ 1 = near (nose tip closer)
+    // MediaPipe z is negative for closer points, positive for farther
+    float depthNorm = clamp(-aPosition.z * 8.0 + 0.5, 0.0, 1.0);
+    vDepth = depthNorm;
+
+    // Point size: larger for closer points (depth-based parallax)
+    float baseSize = uPointScale * (0.6 + depthNorm * 1.8);
+    gl_PointSize = clamp(baseSize, 1.0, 8.0);
+
+    // Brightness: closer = brighter, farther = dimmer
+    vBrightness = 0.3 + depthNorm * 0.7;
+
+    // Scanline proximity boost
+    float dy = abs(aPosition.y - uScanY);
+    vScanDist = smoothstep(0.08, 0.0, dy);
+  }
+`;
+
+// ── Fragment Shader: glowing cyan/violet dot with scanline highlight ──
+const FRAG_SRC = `
+  precision mediump float;
+  varying float vBrightness;
+  varying float vScanDist;
+  varying float vDepth;
+  uniform float uTime;
+  uniform float uColorMode; // 0 = cyan, 1 = violet/IR
+
+  void main() {
+    // Circular point with soft glow edge
+    float dist = length(gl_PointCoord - vec2(0.5));
+    if (dist > 0.5) discard;
+    float glow = 1.0 - smoothstep(0.0, 0.5, dist);
+    glow = glow * glow; // quadratic falloff for sharper dots
+
+    // Base color: cyan neon or IR violet
+    vec3 colorCyan   = vec3(0.0, 0.9, 0.88);
+    vec3 colorViolet = vec3(0.6, 0.2, 1.0);
+    vec3 baseColor = mix(colorCyan, colorViolet, uColorMode);
+
+    // Scanline: boost brightness + add white flash
+    float scanBoost = vScanDist * 2.0;
+    vec3 scanColor  = mix(baseColor, vec3(1.0), vScanDist * 0.6);
+
+    float alpha = glow * (vBrightness + scanBoost) * 0.95;
+    vec3 finalColor = scanColor * (vBrightness + scanBoost);
+
+    gl_FragColor = vec4(finalColor, alpha);
+  }
+`;
+
+function compileShader(src, type) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error('Shader compile error:', gl.getShaderInfoLog(s));
+    return null;
+  }
+  return s;
+}
+
+const vertShader = compileShader(VERT_SRC, gl.VERTEX_SHADER);
+const fragShader = compileShader(FRAG_SRC, gl.FRAGMENT_SHADER);
+const program = gl.createProgram();
+gl.attachShader(program, vertShader);
+gl.attachShader(program, fragShader);
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+  console.error('Program link error:', gl.getProgramInfoLog(program));
+}
+gl.useProgram(program);
+
+const aPosition    = gl.getAttribLocation(program, 'aPosition');
+const uResolution  = gl.getUniformLocation(program, 'uResolution');
+const uPointScale  = gl.getUniformLocation(program, 'uPointScale');
+const uScanY       = gl.getUniformLocation(program, 'uScanY');
+const uTime        = gl.getUniformLocation(program, 'uTime');
+const uColorMode   = gl.getUniformLocation(program, 'uColorMode');
+
+const pointBuffer  = gl.createBuffer();
+gl.enableVertexAttribArray(aPosition);
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // additive blending for glow
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATUS / ERROR HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+function setStatus(text, state = 'loading') {
   statusBarText.textContent = text;
   statusDot.className = state === 'ok' ? 'ok' : state === 'error' ? 'error' : '';
 }
 
-function hideStatusBar() {
-  statusBar.classList.add('hidden');
-}
+function hideStatusBar() { statusBar.classList.add('hidden'); }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ERROR OVERLAY
-// ═══════════════════════════════════════════════════════════════════════════════
 function showError(title, detail) {
   loadingOverlay.classList.add('hidden');
   document.getElementById('errorTitle').textContent = '⚠ ' + title;
@@ -453,9 +576,7 @@ function showError(title, detail) {
   console.error('[FaceDetector]', title, detail);
 }
 
-function hideError() {
-  errorOverlay.classList.remove('visible');
-}
+function hideError() { errorOverlay.classList.remove('visible'); }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // AUDIO BEEP
@@ -464,9 +585,7 @@ let audioCtx = null;
 
 function getAudioCtx() {
   if (!audioCtx) {
-    try {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    } catch(e) {}
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
   }
   return audioCtx;
 }
@@ -499,28 +618,252 @@ let faceMesh          = null;
 
 let nextTrackerId  = 1;
 let totalDetected  = 0;
-let trackers       = []; // { id, color, isNew }
+let trackers       = []; // { id, color, isNew, descriptor }
 
 let scanAnimActive = false;
 
 // FPS counters
 let frameCount = 0;
 let fpsTimer   = performance.now();
+let currentFPS = 0;
 
-// Mesh constants (populated after FaceMesh script loads)
+// Current active point count displayed
+let activePointCount = 0;
+
+// Mesh constants
 let TESSELATION = [];
-let CONTOURS    = [];
-let LIPS        = [];
-let LEFT_EYE    = [];
-let RIGHT_EYE   = [];
 
 // Colors
 const COLOR_KNOWN = '#00ffe7';
 const COLOR_NEW   = '#ffcc00';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SCAN LINE ANIMATION
+// FACE DESCRIPTOR — Geometric ratio vector for Re-ID
 // ═══════════════════════════════════════════════════════════════════════════════
+// Extract a rotation/scale-invariant face signature from key landmark ratios
+const FACE_SIG_INDICES = {
+  noseTip: 1, noseRoot: 6, chin: 152, foreHead: 10,
+  leftEyeInner: 133, leftEyeOuter: 33,
+  rightEyeInner: 362, rightEyeOuter: 263,
+  mouthLeft: 61, mouthRight: 291, mouthTop: 13, mouthBottom: 14,
+  leftCheek: 234, rightCheek: 454,
+  leftEar: 127, rightEar: 356,
+};
+
+function euclidean3(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y, dz = (a.z || 0) - (b.z || 0);
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+function extractFaceDescriptor(lm) {
+  const P = {};
+  for (const [name, idx] of Object.entries(FACE_SIG_INDICES)) {
+    P[name] = lm[idx];
+  }
+
+  // Reference distance for normalization (inter-eye distance)
+  const interEye = euclidean3(P.leftEyeOuter, P.rightEyeOuter);
+  if (interEye < 0.001) return null;
+
+  // Build geometric ratio vector (16 ratios)
+  const ratios = [
+    euclidean3(P.noseTip, P.chin) / interEye,
+    euclidean3(P.noseTip, P.foreHead) / interEye,
+    euclidean3(P.noseTip, P.noseRoot) / interEye,
+    euclidean3(P.leftEyeInner, P.rightEyeInner) / interEye,
+    euclidean3(P.mouthLeft, P.mouthRight) / interEye,
+    euclidean3(P.mouthTop, P.mouthBottom) / interEye,
+    euclidean3(P.noseTip, P.mouthTop) / interEye,
+    euclidean3(P.leftCheek, P.rightCheek) / interEye,
+    euclidean3(P.leftEyeOuter, P.leftCheek) / interEye,
+    euclidean3(P.rightEyeOuter, P.rightCheek) / interEye,
+    euclidean3(P.foreHead, P.chin) / interEye,
+    euclidean3(P.leftEar, P.rightEar) / interEye,
+    euclidean3(P.noseTip, P.leftEyeOuter) / interEye,
+    euclidean3(P.noseTip, P.rightEyeOuter) / interEye,
+    euclidean3(P.chin, P.mouthBottom) / interEye,
+    euclidean3(P.noseRoot, P.foreHead) / interEye,
+  ];
+  return ratios;
+}
+
+function descriptorDistance(a, b) {
+  if (!a || !b || a.length !== b.length) return Infinity;
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) {
+    const d = a[i] - b[i];
+    sum += d * d;
+  }
+  return Math.sqrt(sum);
+}
+
+const RE_ID_THRESHOLD = 0.55; // below this = same person
+let knownFaces = []; // { id, descriptor, lastSeen, color }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BARYCENTRIC INTERPOLATION — Dense Point Cloud Generator
+// ═══════════════════════════════════════════════════════════════════════════════
+// Uses FACEMESH_TESSELATION triangles to generate dense sub-points
+// via barycentric interpolation on the 3D surface.
+
+const SUBDIV_LEVEL = 4; // subdivisions per triangle edge → ~16 points per triangle
+
+// Pre-compute barycentric sample coordinates once
+const barycentricSamples = [];
+(function precomputeBarycentric() {
+  const N = SUBDIV_LEVEL;
+  for (let i = 0; i <= N; i++) {
+    for (let j = 0; j <= N - i; j++) {
+      const k = N - i - j;
+      const u = i / N;
+      const v = j / N;
+      const w = k / N;
+      barycentricSamples.push([u, v, w]);
+    }
+  }
+})();
+
+function generateDensePoints(landmarks, triangles) {
+  // Pre-allocate Float32Array (3 floats per point: x, y, z)
+  const maxPoints = triangles.length * barycentricSamples.length;
+  const data = new Float32Array(maxPoints * 3);
+  let count = 0;
+
+  for (let t = 0; t < triangles.length; t++) {
+    const [ia, ib] = triangles[t]; // pair from FACEMESH_TESSELATION
+    // TESSELATION is a flat list of [a,b] pairs forming edge list;
+    // We need to form triangles. We'll skip and use the raw tessellation edges
+    // to sample along each edge + interpolated points.
+    // Actually FACEMESH_TESSELATION is already triangle pair edges.
+    // We'll sample directly from landmarks and interpolate within each triangle.
+  }
+
+  // Better approach: use every 3 consecutive pairs to form triangles
+  // from the raw tessellation data. MediaPipe FACEMESH_TESSELATION has
+  // individual edge pairs. Instead, let's generate dense points by
+  // sampling across the entire face mesh using a triangle index list.
+  return generateDensePointsFromTriangles(landmarks);
+}
+
+// Build proper triangle indices from tessellation edge pairs
+function buildTriangleIndices(tessEdges) {
+  // MediaPipe FACEMESH_TESSELATION is a list of [a,b] edges that form triangles.
+  // Each triangle has 3 edges: [a,b], [b,c], [c,a]
+  // We need to reconstruct triangles from this edge list.
+  // Shortcut: use a known triangle list for the 468-point face mesh.
+  // We can derive triangles by grouping every 3 edges.
+
+  // Alternative: Build adjacency and extract triangles.
+  // For performance, we'll build an edge set and find all cliques of size 3.
+  const edgeSet = new Set();
+  const adj = new Map();
+
+  for (const [a, b] of tessEdges) {
+    const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+    edgeSet.add(key);
+    if (!adj.has(a)) adj.set(a, []);
+    if (!adj.has(b)) adj.set(b, []);
+    adj.get(a).push(b);
+    adj.get(b).push(a);
+  }
+
+  const triangles = [];
+  const seen = new Set();
+
+  for (const [a, b] of tessEdges) {
+    const neighborsA = adj.get(a) || [];
+    const neighborsB = adj.get(b) || [];
+
+    // Find common neighbors of a and b
+    const setB = new Set(neighborsB);
+    for (const c of neighborsA) {
+      if (c !== b && setB.has(c)) {
+        const tri = [a, b, c].sort((x, y) => x - y);
+        const triKey = tri.join('_');
+        if (!seen.has(triKey)) {
+          seen.add(triKey);
+          triangles.push(tri);
+        }
+      }
+    }
+  }
+
+  return triangles;
+}
+
+let cachedTriangles = null;
+
+function generateDensePointsFromTriangles(landmarks) {
+  if (!cachedTriangles && TESSELATION.length > 0) {
+    cachedTriangles = buildTriangleIndices(TESSELATION);
+  }
+
+  if (!cachedTriangles || cachedTriangles.length === 0) {
+    // Fallback: just use the 468 landmarks directly
+    const data = new Float32Array(landmarks.length * 3);
+    for (let i = 0; i < landmarks.length; i++) {
+      data[i * 3]     = landmarks[i].x;
+      data[i * 3 + 1] = landmarks[i].y;
+      data[i * 3 + 2] = landmarks[i].z || 0;
+    }
+    return { data, count: landmarks.length };
+  }
+
+  const maxPts = cachedTriangles.length * barycentricSamples.length;
+  const data = new Float32Array(maxPts * 3);
+  let count = 0;
+
+  for (const [ia, ib, ic] of cachedTriangles) {
+    const A = landmarks[ia], B = landmarks[ib], C = landmarks[ic];
+    if (!A || !B || !C) continue;
+
+    for (const [u, v, w] of barycentricSamples) {
+      const px = A.x * u + B.x * v + C.x * w;
+      const py = A.y * u + B.y * v + C.y * w;
+      const pz = (A.z || 0) * u + (B.z || 0) * v + (C.z || 0) * w;
+      data[count * 3]     = px;
+      data[count * 3 + 1] = py;
+      data[count * 3 + 2] = pz;
+      count++;
+    }
+  }
+
+  return { data, count };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INTERPOLATION / LERP — Smooth landmark transitions between frames
+// ═══════════════════════════════════════════════════════════════════════════════
+const LERP_FACTOR = 0.45; // 0 = no smoothing, 1 = no interpolation
+
+let prevLandmarksSmoothed = []; // per-face array of smoothed landmarks
+
+function lerpLandmarks(current, previous) {
+  if (!previous || previous.length !== current.length) return current;
+  return current.map((lm, i) => {
+    const prev = previous[i];
+    if (!prev) return lm;
+    return {
+      x: prev.x + (lm.x - prev.x) * LERP_FACTOR,
+      y: prev.y + (lm.y - prev.y) * LERP_FACTOR,
+      z: (prev.z || 0) + ((lm.z || 0) - (prev.z || 0)) * LERP_FACTOR,
+    };
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCANLINE ANIMATION STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+let scanlineY = 0; // normalized [0..1]
+let scanlineActive = true; // continuous radar scan
+
+function updateScanline() {
+  const speed = 0.008; // normalized units per frame
+  scanlineY += speed;
+  if (scanlineY > 1.15) scanlineY = -0.15;
+}
+
+// Scan animation overlay (CSS scan line for new face detection)
 function triggerScanAnimation() {
   if (scanAnimActive) return;
   scanAnimActive = true;
@@ -556,254 +899,289 @@ function updateTrackerListUI() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FACE RECONCILIATION
+// FACE RE-ID RECONCILIATION
 // ═══════════════════════════════════════════════════════════════════════════════
 let prevFaceCount = 0;
 
-function reconcileTrackers(faceCount) {
-  if (faceCount === prevFaceCount) {
-    trackers.forEach(t => t.isNew = false);
-    return;
-  }
+function reconcileTrackersWithReID(faceLandmarksArray) {
+  const faceCount = faceLandmarksArray.length;
 
-  if (faceCount > prevFaceCount) {
-    const added = faceCount - prevFaceCount;
-    for (let i = 0; i < added; i++) {
+  // Extract descriptors for each face in the current frame
+  const currentDescriptors = faceLandmarksArray.map(lm => extractFaceDescriptor(lm));
+
+  // Match each face to known faces or create new
+  const newTrackers = [];
+  const matchedKnown = new Set();
+
+  for (let i = 0; i < faceCount; i++) {
+    const desc = currentDescriptors[i];
+    let bestMatch = null;
+    let bestDist = Infinity;
+
+    // Search known faces for a match
+    for (let k = 0; k < knownFaces.length; k++) {
+      if (matchedKnown.has(k)) continue;
+      const dist = descriptorDistance(desc, knownFaces[k].descriptor);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestMatch = k;
+      }
+    }
+
+    if (bestMatch !== null && bestDist < RE_ID_THRESHOLD) {
+      // Re-identified!
+      matchedKnown.add(bestMatch);
+      const known = knownFaces[bestMatch];
+      // Update descriptor with exponential moving average
+      if (desc) {
+        known.descriptor = known.descriptor.map((v, j) =>
+          v * 0.85 + (desc[j] || 0) * 0.15
+        );
+      }
+      known.lastSeen = performance.now();
+      newTrackers.push({ id: known.id, color: COLOR_KNOWN, isNew: false, knownIdx: bestMatch });
+    } else {
+      // New face!
       totalDetected++;
-      const newTracker = { id: nextTrackerId++, isNew: true, color: COLOR_NEW };
-      trackers.push(newTracker);
+      const id = nextTrackerId++;
+      const newEntry = {
+        id, descriptor: desc, lastSeen: performance.now(), color: COLOR_KNOWN
+      };
+      knownFaces.push(newEntry);
+      newTrackers.push({ id, color: COLOR_NEW, isNew: true, knownIdx: knownFaces.length - 1 });
       triggerScanAnimation();
       playBeep(1200 + i * 200, 0.14, 0.25);
-      (function(t) {
-        setTimeout(() => { t.isNew = false; t.color = COLOR_KNOWN; updateTrackerListUI(); }, 2000);
-      })(newTracker);
+
+      // Transition to known after 2s
+      const tracker = newTrackers[newTrackers.length - 1];
+      setTimeout(() => {
+        tracker.isNew = false;
+        tracker.color = COLOR_KNOWN;
+        updateTrackerListUI();
+      }, 2000);
+
+      totalCountEl.textContent = totalDetected;
     }
-    totalCountEl.textContent = totalDetected;
-  } else {
-    const removed = prevFaceCount - faceCount;
-    for (let i = 0; i < removed; i++) trackers.pop();
   }
 
+  // Cleanup: remove known faces not seen for 60 seconds
+  const now = performance.now();
+  knownFaces = knownFaces.filter(kf => now - kf.lastSeen < 60000);
+
+  trackers = newTrackers;
   prevFaceCount = faceCount;
   updateTrackerListUI();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DRAW FACE MESH
+// WEBGL RENDERING — Dot Projector
 // ═══════════════════════════════════════════════════════════════════════════════
-function drawConnectors(pairs, color, lineWidth) {
-  const W = canvas.width, H = canvas.height;
-  ctx.strokeStyle = color;
-  ctx.lineWidth   = lineWidth;
-  ctx.beginPath();
-  pairs.forEach(([a, b]) => {
-    const p1 = pairs[0] !== undefined ? null : null; // reset trick
-    const lm1 = currentLandmarks[a];
-    const lm2 = currentLandmarks[b];
-    if (!lm1 || !lm2) return;
-    ctx.moveTo(lm1.x * W, lm1.y * H);
-    ctx.lineTo(lm2.x * W, lm2.y * H);
-  });
-  ctx.stroke();
+function renderDotProjector(allFacePoints, canvasW, canvasH, time) {
+  gl.viewport(0, 0, canvasW, canvasH);
+  gl.clearColor(0, 0, 0, 1); // dark background
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  if (allFacePoints.length === 0) return;
+
+  // Merge all face point data into one buffer
+  let totalCount = 0;
+  for (const fp of allFacePoints) totalCount += fp.count;
+
+  const merged = new Float32Array(totalCount * 3);
+  let offset = 0;
+  for (const fp of allFacePoints) {
+    merged.set(fp.data.subarray(0, fp.count * 3), offset);
+    offset += fp.count * 3;
+  }
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, pointBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, merged, gl.DYNAMIC_DRAW);
+  gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
+
+  gl.uniform2f(uResolution, canvasW, canvasH);
+
+  // Adaptive point scale based on canvas resolution
+  const scale = Math.min(canvasW, canvasH) / 320;
+  gl.uniform1f(uPointScale, scale * 2.5);
+
+  gl.uniform1f(uScanY, scanlineActive ? scanlineY : -1.0);
+  gl.uniform1f(uTime, time * 0.001);
+  gl.uniform1f(uColorMode, 0.0); // 0 = cyan, change to 1 for violet
+
+  gl.drawArrays(gl.POINTS, 0, totalCount);
+
+  activePointCount = totalCount;
 }
 
-// We use a module-level variable to pass landmarks into drawConnectors cleanly
-let currentLandmarks = [];
+// ═══════════════════════════════════════════════════════════════════════════════
+// HUD 2D OVERLAY — draw face ID labels
+// ═══════════════════════════════════════════════════════════════════════════════
+function renderHUD(faceLandmarksArray, canvasW, canvasH) {
+  hudCtx.clearRect(0, 0, canvasW, canvasH);
 
-function drawFaceMesh(landmarks, faceIndex) {
-  currentLandmarks = landmarks;
-  const tracker  = trackers[faceIndex] || { color: COLOR_KNOWN, isNew: false };
-  const baseColor = tracker.color;
-  const alpha     = tracker.isNew ? 0.95 : 0.65;
-  const W = canvas.width, H = canvas.height;
+  for (let i = 0; i < faceLandmarksArray.length; i++) {
+    const landmarks = faceLandmarksArray[i];
+    const tracker = trackers[i] || { id: '?', color: COLOR_KNOWN, isNew: false };
+    const nose = landmarks[1];
+    if (!nose) continue;
 
-  function connectors(pairs, color, lw) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth   = lw;
-    ctx.beginPath();
-    pairs.forEach(([a, b]) => {
-      const p1 = landmarks[a], p2 = landmarks[b];
-      if (!p1 || !p2) return;
-      ctx.moveTo(p1.x * W, p1.y * H);
-      ctx.lineTo(p2.x * W, p2.y * H);
-    });
-    ctx.stroke();
+    // Mirror X to match front camera
+    const nx = (1.0 - nose.x) * canvasW;
+    const ny = nose.y * canvasH;
+
+    hudCtx.globalAlpha = 1;
+    hudCtx.font = 'bold 14px Courier New';
+    hudCtx.fillStyle = tracker.isNew ? COLOR_NEW : COLOR_KNOWN;
+    const label = tracker.isNew ? `⚡ NEW #${tracker.id}` : `✦ ID #${tracker.id}`;
+    hudCtx.shadowColor = tracker.isNew ? COLOR_NEW : COLOR_KNOWN;
+    hudCtx.shadowBlur = 12;
+    hudCtx.fillText(label, nx - 30, ny - 40);
+    hudCtx.shadowBlur = 0;
+
+    // Draw bounding box
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const lm of landmarks) {
+      const lx = (1.0 - lm.x) * canvasW;
+      const ly = lm.y * canvasH;
+      if (lx < minX) minX = lx;
+      if (lx > maxX) maxX = lx;
+      if (ly < minY) minY = ly;
+      if (ly > maxY) maxY = ly;
+    }
+    const pad = 15;
+    hudCtx.strokeStyle = tracker.isNew ? 'rgba(255,204,0,0.4)' : 'rgba(0,255,231,0.25)';
+    hudCtx.lineWidth = 1;
+    hudCtx.setLineDash([6, 4]);
+    hudCtx.strokeRect(minX - pad, minY - pad, maxX - minX + pad * 2, maxY - minY + pad * 2);
+    hudCtx.setLineDash([]);
   }
-
-  // Tesselation (fine mesh)
-  if (TESSELATION.length) {
-    ctx.globalAlpha = alpha * 0.35;
-    connectors(TESSELATION, baseColor, 0.5);
-  }
-
-  // Face contours, lips, eyes
-  ctx.globalAlpha = alpha;
-  if (CONTOURS.length)   connectors(CONTOURS,   baseColor, 1.5);
-  if (LIPS.length)       connectors(LIPS,        baseColor, 1.5);
-  if (LEFT_EYE.length)   connectors(LEFT_EYE,    baseColor, 1.5);
-  if (RIGHT_EYE.length)  connectors(RIGHT_EYE,   baseColor, 1.5);
-
-  // Key landmark dots
-  ctx.globalAlpha = alpha;
-  const keyPoints = [1, 4, 33, 263, 61, 291, 199, 10, 152, 234, 454, 468, 473];
-  keyPoints.forEach(idx => {
-    const p = landmarks[idx];
-    if (!p) return;
-    ctx.beginPath();
-    ctx.arc(p.x * W, p.y * H, tracker.isNew ? 3 : 2, 0, Math.PI * 2);
-    ctx.fillStyle = baseColor;
-    ctx.fill();
-  });
-
-  // Face ID label near nose tip
-  const nose = landmarks[1];
-  if (nose) {
-    ctx.globalAlpha = 1;
-    ctx.font        = 'bold 12px Courier New';
-    ctx.fillStyle   = baseColor;
-    const label = tracker.isNew ? `⚡ NEW #${tracker.id}` : `✦ #${tracker.id}`;
-    ctx.shadowColor = baseColor;
-    ctx.shadowBlur  = 8;
-    ctx.fillText(label, nose.x * W - 20, nose.y * H - 30);
-    ctx.shadowBlur  = 0;
-  }
-
-  ctx.globalAlpha = 1;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MEDIAPIPE RESULTS CALLBACK
 // ═══════════════════════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════════════════════
-// THROTTLE + DUPLICATE FILTER
-// ═══════════════════════════════════════════════════════════════════════════════
 let _lastResultsTs = 0;
 
-// Euclidean distance giữa 2 điểm landmark (toạ độ chuẩn hoá 0-1)
-function euclidean(a, b) {
-  const dx = a.x - b.x, dy = a.y - b.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-// Trả về true nếu khuôn mặt mới trùng với 1 khuôn mặt đã được cache
-// (so sánh 5 điểm đặc trưng: mũi, 2 mắt, 2 khoé miệng)
-const KEY_IDX = [1, 33, 263, 61, 291];
-let _prevCentroids = []; // mảng {x,y} của từng face frame trước
-
-function isDuplicateFace(landmarks, prevCentroid) {
-  if (!prevCentroid) return false;
-  let dist = 0;
-  KEY_IDX.forEach(i => {
-    dist += euclidean(landmarks[i], prevCentroid[i] || { x: 0, y: 0 });
-  });
-  return (dist / KEY_IDX.length) < 0.015; // ngưỡng: dịch chuyển < 1.5% frame
-}
-
-function extractCentroid(landmarks) {
-  const c = {};
-  KEY_IDX.forEach(i => { c[i] = { x: landmarks[i].x, y: landmarks[i].y }; });
-  return c;
-}
-
 function onResults(results) {
-  // ── Throttle 30ms: bỏ qua frame nếu chưa đủ thời gian ──
   const now = performance.now();
-  if (now - _lastResultsTs < 30) return;
-  _lastResultsTs = now;
 
   // FPS calculation
   frameCount++;
   if (now - fpsTimer >= 1000) {
-    fpsEl.textContent = Math.round(frameCount * 1000 / (now - fpsTimer));
+    currentFPS = Math.round(frameCount * 1000 / (now - fpsTimer));
+    fpsEl.textContent = currentFPS;
     frameCount = 0;
-    fpsTimer   = now;
+    fpsTimer = now;
   }
 
-  // ── CRITICAL: sync canvas size from the actual video frame, not CSS ──
-  // results.image is an HTMLVideoElement; use its intrinsic dimensions.
-  const imgW = results.image.videoWidth  || results.image.width  || video.videoWidth  || 640;
-  const imgH = results.image.videoHeight || results.image.height || video.videoHeight || 480;
-  if (canvas.width !== imgW || canvas.height !== imgH) {
-    canvas.width  = imgW;
-    canvas.height = imgH;
+  // Get actual video dimensions for reference
+  const vidW = results.image.videoWidth  || results.image.width  || video.videoWidth  || 1280;
+  const vidH = results.image.videoHeight || results.image.height || video.videoHeight || 720;
+
+  // Set canvas sizes to screen display size (HD render)
+  const displayW = glCanvas.clientWidth  || window.innerWidth;
+  const displayH = glCanvas.clientHeight || window.innerHeight;
+
+  if (glCanvas.width !== displayW || glCanvas.height !== displayH) {
+    glCanvas.width = displayW;
+    glCanvas.height = displayH;
+    hudCanvas.width = displayW;
+    hudCanvas.height = displayH;
   }
 
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Update resolution display
+  resEl.textContent = `${vidW}×${vidH}`;
 
-  // Draw camera frame (mirrored to match CSS transform on video)
-  ctx.save();
-  ctx.translate(canvas.width, 0);
-  ctx.scale(-1, 1);
-  ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
-  ctx.restore();
-
-  // Mirror landmarks drawing as well
-  ctx.save();
-  ctx.translate(canvas.width, 0);
-  ctx.scale(-1, 1);
+  // Update scanline
+  updateScanline();
 
   if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-    const faceCount = results.multiFaceLandmarks.length;
-    reconcileTrackers(faceCount);
+    const faces = results.multiFaceLandmarks;
+    const faceCount = faces.length;
+
+    // Smooth landmarks with lerp
+    const smoothedFaces = faces.map((lm, i) => {
+      const smoothed = lerpLandmarks(lm, prevLandmarksSmoothed[i]);
+      return smoothed;
+    });
+    prevLandmarksSmoothed = smoothedFaces;
+
+    // Re-ID reconciliation
+    reconcileTrackersWithReID(smoothedFaces);
     currentCountEl.textContent = faceCount;
 
-    // Lọc duplicate: chỉ vẽ mesh cho khuôn mặt có di chuyển đáng kể
-    results.multiFaceLandmarks.forEach((landmarks, i) => {
-      const isDup = isDuplicateFace(landmarks, _prevCentroids[i]);
-      if (!isDup) drawFaceMesh(landmarks, i);
-    });
-    // Cập nhật centroid cache cho frame tiếp theo
-    _prevCentroids = results.multiFaceLandmarks.map(extractCentroid);
+    // Generate dense point clouds for each face
+    const allPoints = [];
+    for (const lm of smoothedFaces) {
+      // Mirror X coordinates for front camera
+      const mirrored = lm.map(p => ({ x: 1.0 - p.x, y: p.y, z: p.z || 0 }));
+      const denseResult = generateDensePointsFromTriangles(mirrored);
+      allPoints.push(denseResult);
+    }
 
-    statusMsg.textContent = `▶ ${faceCount} khuôn mặt được phát hiện`;
+    // Render dot projector via WebGL
+    renderDotProjector(allPoints, displayW, displayH, now);
+
+    // Update point count display
+    pointCountEl.textContent = activePointCount.toLocaleString();
+
+    // Render 2D HUD labels
+    renderHUD(smoothedFaces, displayW, displayH);
+
+    statusMsg.textContent = `▶ ${faceCount} face(s) — ${activePointCount.toLocaleString()} 3D points`;
   } else {
-    reconcileTrackers(0);
+    // No faces
+    prevLandmarksSmoothed = [];
+    if (trackers.length > 0) {
+      trackers = [];
+      prevFaceCount = 0;
+      updateTrackerListUI();
+    }
     currentCountEl.textContent = '0';
-    _prevCentroids = [];
-    statusMsg.textContent = '◉ Đang quét...';
-  }
+    pointCountEl.textContent = '0';
 
-  ctx.restore();
+    // Clear WebGL canvas to black
+    gl.viewport(0, 0, displayW, displayH);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // Clear HUD
+    hudCtx.clearRect(0, 0, displayW, displayH);
+
+    statusMsg.textContent = '◉ TrueDepth Scanning...';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MEDIAPIPE FACEMESH INIT
 // ═══════════════════════════════════════════════════════════════════════════════
 async function initFaceMesh() {
-  setStatus('2. Đang tải mô hình MediaPipe...', 'loading');
-  updateLoadingStep('Đang tải mô hình nhận diện khuôn mặt...');
+  setStatus('2. Đang tải mô hình MediaPipe FaceMesh...', 'loading');
+  updateLoadingStep('Đang tải mô hình nhận diện khuôn mặt HD...');
 
   faceMesh = new FaceMesh({
-    // locateFile đúng chuẩn — chỉ định rõ CDN chứa file WASM / bin
-    // thiếu dòng này trình duyệt di động sẽ tìm file nhị phân ở đường dẫn
-    // sai và FaceMesh im lặng thất bại
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
   });
 
-  // maxNumFaces = 5 lúc khởi động để tránh tràn bộ nhớ WebGL trên GPU di động.
-  // Người dùng có thể tăng qua console: faceMesh.setOptions({maxNumFaces:30})
   faceMesh.setOptions({
-    maxNumFaces:          5,
-    refineLandmarks:      false, // tắt để tiết kiệm GPU trên di động
+    maxNumFaces:            5,
+    refineLandmarks:        true, // enabled for 478 landmarks (iris tracking)
     minDetectionConfidence: 0.5,
     minTrackingConfidence:  0.5,
   });
 
   faceMesh.onResults(onResults);
 
-  // Warm-up: gửi 1 frame trắng để WASM nạp xong trước khi camera bật
-  // (tránh lag / crash frame đầu trên thiết bị yếu)
+  // Warm-up
   try {
     const warmup = document.createElement('canvas');
     warmup.width = 320; warmup.height = 240;
     await faceMesh.send({ image: warmup });
-  } catch(e) {
-    // Warm-up có thể thất bại vô hại — bỏ qua
-  }
+  } catch(e) {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CAMERA SETUP
+// CAMERA SETUP — HD Pipeline
 // ═══════════════════════════════════════════════════════════════════════════════
 function updateLoadingStep(text) {
   if (loadingStepEl) loadingStepEl.textContent = text;
@@ -812,20 +1190,27 @@ function updateLoadingStep(text) {
 async function startCamera() {
   hideError();
 
-  // Stop previous stream / camera if any
   if (mediapipeCamera) { try { mediapipeCamera.stop(); } catch(e) {} }
   if (currentStream)   { currentStream.getTracks().forEach(t => t.stop()); }
 
-  setStatus('1. Đang khởi tạo camera...', 'loading');
-  updateLoadingStep('Đang xin quyền truy cập camera...');
+  setStatus('1. Đang khởi tạo camera HD...', 'loading');
+  updateLoadingStep('Đang xin quyền truy cập camera HD...');
 
-  // Try preferred resolution first; fall back to basic constraints for older devices
+  // HD constraints: ideal 1280x720
   const constraintSets = [
     {
       video: {
         facingMode: useFrontCamera ? 'user' : 'environment',
-        width:  { ideal: 640 },
-        height: { ideal: 480 },
+        width:  { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+      audio: false,
+    },
+    {
+      video: {
+        facingMode: useFrontCamera ? 'user' : 'environment',
+        width:  { ideal: 960 },
+        height: { ideal: 540 },
       },
       audio: false,
     },
@@ -867,46 +1252,48 @@ async function startCamera() {
   video.srcObject = stream;
   video.style.transform = useFrontCamera ? 'scaleX(-1)' : 'scaleX(1)';
 
-  // ── CRITICAL: đồng bộ kích thước canvas NGAY KHI metadata sẵn sàng ──
-  // Phải đặt canvas.width / height bằng videoWidth / videoHeight thực tế,
-  // không dùng kích thước CSS — nếu không MediaPipe sẽ vẽ sai tỷ lệ
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Video metadata timeout')), 10000);
     video.onloadedmetadata = () => {
       clearTimeout(timer);
-      canvas.width  = video.videoWidth  || 640;
-      canvas.height = video.videoHeight || 480;
       resolve();
     };
   });
 
-  // Đảm bảo video thực sự đang play (cần thiết trên một số trình duyệt Android)
-  try { await video.play(); } catch(e) { /* autoplay đã xử lý */ }
+  try { await video.play(); } catch(e) {}
 
-  updateLoadingStep('Camera sẵn sàng. Đang tải mô hình AI...');
+  const actualW = video.videoWidth  || 1280;
+  const actualH = video.videoHeight || 720;
+  console.log(`[TrueDepth] Camera resolution: ${actualW}×${actualH}`);
+  resEl.textContent = `${actualW}×${actualH}`;
 
-  // Khởi tạo FaceMesh nếu chưa có
+  updateLoadingStep('Camera HD sẵn sàng. Đang tải AI model...');
+
   if (!faceMesh) {
     await initFaceMesh();
   }
 
-  setStatus('3. Camera sẵn sàng, đang tìm khuôn mặt...', 'loading');
-  updateLoadingStep('Đang khởi chạy nhận diện khuôn mặt...');
+  setStatus('3. Camera HD sẵn sàng, đang quét...', 'loading');
+  updateLoadingStep('Đang khởi chạy TrueDepth 3D Scanner...');
 
-  // Dùng MediaPipe Camera helper để pump frame đều đặn
+  // MediaPipe Camera helper — pump frames
+  // AI processes at reduced resolution for performance,
+  // but WebGL renders at full display resolution
+  const aiWidth  = Math.min(actualW, 640);  // downscale for AI
+  const aiHeight = Math.round(aiWidth * actualH / actualW);
+
   mediapipeCamera = new Camera(video, {
     onFrame: async () => {
       if (faceMesh && video.readyState >= 2) {
         try {
           await faceMesh.send({ image: video });
         } catch(e) {
-          console.warn('[FaceDetector] faceMesh.send error:', e);
+          console.warn('[TrueDepth] faceMesh.send error:', e);
         }
       }
     },
-    // Dùng kích thước thực của video thay vì hard-code 1280×720
-    width:  video.videoWidth  || 640,
-    height: video.videoHeight || 480, // 480p — giới hạn input để giảm tải GPU
+    width:  aiWidth,
+    height: aiHeight,
   });
 
   try {
@@ -916,11 +1303,8 @@ async function startCamera() {
     return;
   }
 
-  // Ẩn loading overlay, cập nhật status bar
   loadingOverlay.classList.add('hidden');
-  setStatus('3. Camera sẵn sàng, đang tìm khuôn mặt', 'ok');
-
-  // Ẩn status bar sau 4 giây (vẫn giữ nếu gặp lỗi)
+  setStatus('TrueDepth 3D Scanner — Active', 'ok');
   setTimeout(() => hideStatusBar(), 4000);
 }
 
@@ -932,6 +1316,7 @@ switchCamBtn.addEventListener('click', async () => {
   useFrontCamera = !useFrontCamera;
   loadingOverlay.classList.remove('hidden');
   statusBar.classList.remove('hidden');
+  prevLandmarksSmoothed = [];
   await startCamera();
 });
 
@@ -945,17 +1330,11 @@ retryBtn.addEventListener('click', async () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BOOTSTRAP — load mesh constants sau khi scripts mediapipe đã parse xong
+// BOOTSTRAP
 // ═══════════════════════════════════════════════════════════════════════════════
 (async () => {
   try {
-    // Lấy hằng số FACEMESH từ window (được set bởi drawing_utils.js)
     TESSELATION = window.FACEMESH_TESSELATION || [];
-    CONTOURS    = window.FACEMESH_FACE_OVAL   || [];
-    LIPS        = window.FACEMESH_LIPS        || [];
-    LEFT_EYE    = window.FACEMESH_LEFT_EYE    || [];
-    RIGHT_EYE   = window.FACEMESH_RIGHT_EYE   || [];
-
     await startCamera();
   } catch(err) {
     showError('Lỗi khởi động', err.message || String(err));
